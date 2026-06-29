@@ -1,6 +1,6 @@
 # fccproxy — FCC Protocol Proxy
 
-**fccproxy** is a transparent UDP proxy that bridges the FCC (Fusion Communication Center) protocol between **Huawei** and **China Telecom** variants. It auto-detects the client protocol, translates packets on-the-fly, and performs NAT rewriting so both sides believe they are communicating directly.
+**fccproxy** is a transparent UDP proxy that bridges the FCC (Fast Channel Change) protocol between **Huawei** and **Telecom** variants. It auto-detects the client protocol, translates packets on-the-fly, and performs NAT rewriting so both sides believe they are communicating directly.
 
 ## Features
 
@@ -27,7 +27,7 @@
 └──────────────────┘                      └──────────────────────────┘                      └──────────────────┘
 ```
 
-The proxy listens on a UDP port, receives client packets, detects the protocol variant, converts between formats via `fcc_bridge()`, and forwards to the upstream server. Return traffic is converted back and sent to the client.
+The proxy listens on a UDP port, receives client packets, detects the protocol variant, converts between formats, and forwards to the upstream server. Return traffic is converted back and sent to the client.
 
 ## Project Structure
 
@@ -122,6 +122,10 @@ fccproxy -p 8027 -s 172.16.0.1:8027 -v
 5. **NAT rewriting**: Source/destination IPs and ports in the payload are rewritten so each side sees the proxy as the peer.
 6. **Media forwarding**: RTP packets are forwarded without inspection between the paired signal/media sockets.
 7. **Cleanup**: Idle sessions expire after 3 seconds; termination packets trigger a 1-second grace period before teardown.
+
+## Acknowledgements
+
+This project is based on  [oskar456/rtp2httpd](https://github.com/stackia/rtp2httpd) and rewritten. Special thanks for their selfless contribution. .
 
 ## License
 
