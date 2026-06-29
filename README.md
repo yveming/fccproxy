@@ -21,11 +21,10 @@
 ## Architecture
 
 ```
-┌──────────────┐       UDP         ┌───────────┐        UDP        ┌─────────┐
-│  FCC Client  │ ◄─────────────►  │       fccproxy        │◄───────► │                  │
-│ (Huawei or   │RTCP + RTP  │                   │     RTCP + RTP       │     (Huawei or    │    FCC Server    │
-│  Telecom)    │            │                   │                      │      Telecom)     │                  │
-└──────────────┘                   └───────────┘                   └─────────┘
+┌──────────────────┐     UDP/RTCP/RTP     ┌──────────────────────────┐     UDP/RTCP/RTP     ┌──────────────────┐
+│   FCC Client     │ ◄──────────────────► │        fccproxy          │ ◄──────────────────► │   FCC Server     │
+│ (Huawei/Telecom) │                      │  (Huawei ↔ Telecom)      │                      │ (Huawei/Telecom) │
+└──────────────────┘                      └──────────────────────────┘                      └──────────────────┘
 ```
 
 The proxy listens on a UDP port, receives client packets, detects the protocol variant, converts between formats via `fcc_bridge()`, and forwards to the upstream server. Return traffic is converted back and sent to the client.
