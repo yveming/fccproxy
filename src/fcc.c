@@ -197,6 +197,16 @@ static int handle_rtcp_from_client(const uint8_t *buf, ssize_t len,
     inet_ntop(AF_INET, &src->sin_addr, src_str, sizeof(src_str));
     uint16_t src_port = ntohs(src->sin_port);
 
+    /* RTCP BYE (PT 203) carries no FCC payload. Historical behaviour is
+     * to ignore it; keep that, but label it truthfully instead of the
+     * bogus "FMT=1" line the generic FMT extraction produces for it. */
+    if (len >= 2 && buf[1] == RTCP_PT_BYE)
+    {
+        PXY_DBG("RX RTCP BYE from %s:%u%s", src_str, src_port,
+                session_find_by_client(src) ? "" : " (no session, dropped)");
+        return 0;
+    }
+
     PXY_DBG("RX RTCP FMT=%d proto=%d from client %s:%u", fmt, proto, src_str, src_port);
     print_hex("CLIENT → PROXY", buf, len);
 
@@ -221,7 +231,8 @@ static int handle_rtcp_from_client(const uint8_t *buf, ssize_t len,
         }
         else if (proto == PROTO_HUAWEI && len >= FCC_PK_LEN_REQ_HUAWEI_MIN)
         {
-            adv_media_port = htons(ntohs(src->sin_port) - 1);
+            const fcc_huawei_req_t *req = (const fcc_huawei_req_t *)buf;
+            adv_media_port = htons(ntohs(req->signal_port) - 1);
         }
 
         if (adv_media_port)
@@ -242,7 +253,8 @@ static int handle_rtcp_from_client(const uint8_t *buf, ssize_t len,
     }
 
     save_client_media_port(sess, proto, buf, len);
-    
+    sess->req_rx++;
+
     if (sess->state != SESS_TERMINATING)
         sess->last_active = time(NULL);
 
@@ -266,8 +278,15 @@ static int handle_rtcp_from_client(const uint8_t *buf, ssize_t len,
 
     if (is_term_pkt(proto, fmt, len))
     {
-        PXY_INFO("TERM received from client %s:%u, terminating session %d",
-                 src_str, src_port, sess->slot);
+        /* Offset 12 carries the result byte: Huawei FMT 9 status
+         * (0x01 success, 0x02 fail/abort); Telecom FMT 5 sub-type (0x01). */
+        unsigned char code = (len >= 13) ? buf[12] : 0;
+        const char *verdict = (code == 0x01) ? "success" :
+                              (code == 0x02) ? "fail/abort" : "?";
+
+        PXY_INFO("TERM received from client %s:%u, session %d, "
+                 "status=0x%02x (%s)",
+                 src_str, src_port, sess->slot, code, verdict);
         session_mark_terminating(sess, time(NULL));
     }
 
@@ -292,11 +311,15 @@ static int handle_media_from_client(const uint8_t *buf, ssize_t len,
         if (sess->server_media_port)
             dst.sin_port = sess->server_media_port; /* keepalive → media port */
         if (g_config.debug && ++rtp_dbg_count <= 5)
-            fprintf(stderr, "FCCPROXY[DBG]: RX %s from client %s:%u "
+        {
+            char ts_[32];
+            fprintf(stderr, "%sFCC_PROXY[DBG]: RX %s from client %s:%u "
                             "→ forwarding to server %s:%u\n",
+                    fcc_log_ts(ts_, sizeof(ts_)),
                     len <= 1 ? "keepalive" : "RTP",
                     src_str, src_port,
                     inet_ntoa(dst.sin_addr), ntohs(dst.sin_port));
+        }
         if (sess->state != SESS_TERMINATING)
             sess->last_active = time(NULL);
         sendto_reliable(sess->server_sock, buf, len, 0,
@@ -304,8 +327,9 @@ static int handle_media_from_client(const uint8_t *buf, ssize_t len,
     }
     else if (g_config.debug && ++rtp_dbg_count <= 3)
     {
-        fprintf(stderr, "FCCPROXY[DBG]: RX RTP from unknown client %s:%u, dropping\n",
-                src_str, src_port);
+        char ts_[32];
+        fprintf(stderr, "%sFCC_PROXY[DBG]: RX RTP from unknown client %s:%u, dropping\n",
+                fcc_log_ts(ts_, sizeof(ts_)), src_str, src_port);
     }
 
     return 0;
@@ -329,6 +353,7 @@ static int handle_rtcp_from_server(const uint8_t *buf, ssize_t len,
 {
     int server_fmt = fcc_get_fmt(buf);
     proto_type_t server_proto = sess->server_proto;
+    sess->resp_rx++;
 
     char client_str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &sess->client_addr.sin_addr, client_str, sizeof(client_str));    
@@ -375,12 +400,16 @@ static int handle_media_from_server(const uint8_t *buf, ssize_t len,
 {
     static int rtp_dbg_count = 0;
 
+    sess->rtp_rx++;
+
     if (g_config.debug && ++rtp_dbg_count <= 3)
     {
         char client_str[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &sess->client_addr.sin_addr, client_str, sizeof(client_str));    
-        fprintf(stderr, "FCCPROXY[DBG]: RX RTP from server"
-                        " → forwarding to client %s:%u\n", client_str,
+        char ts_[32];
+        fprintf(stderr, "%sFCC_PROXY[DBG]: RX RTP from server"
+                        " → forwarding to client %s:%u\n", fcc_log_ts(ts_, sizeof(ts_)),
+                client_str,
                 ntohs(sess->client_media_port ? sess->client_media_port
                                          : sess->client_addr.sin_port));
     }

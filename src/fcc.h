@@ -30,6 +30,7 @@
 
 /* RTCP common fields */
 #define RTCP_PT_RTPFB 205  /* Generic RTP Feedback payload type */
+#define RTCP_PT_BYE  203  /* RTCP BYE payload type */
 
 typedef struct FCC_PACKED {
     uint8_t  vpfmt;      /* version/padding/FMT */

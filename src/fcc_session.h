@@ -71,6 +71,11 @@ typedef struct {
     time_t last_active;
     time_t term_deadline;
 
+    /* Statistics for the close-out summary log */
+    unsigned req_rx;      /* FCC/RTCP packets received from the client */
+    unsigned resp_rx;     /* RTCP packets received from the server */
+    unsigned rtp_rx;      /* RTP packets received from the server */
+
     /* Saved server address for response routing */
     struct sockaddr_in server_addr;
     uint16_t server_media_port;   /* real server media port (network order) */

@@ -1,0 +1,11 @@
+# Build artifacts
+build/
+fccproxy
+*.o
+
+# Local IPTV playlists
+*.m3u
+
+# Python
+__pycache__/
+

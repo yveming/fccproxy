@@ -22,6 +22,7 @@
 #include <netinet/in.h>
 #include <stdio.h>
 #include <syslog.h>
+#include <time.h>
 
 #include "fcc_session.h"
 
@@ -60,14 +61,35 @@ typedef struct {
 
 /* ================================================================
  * Logging macros
+ *
+ * stderr lines carry a "[HH:MM:SS.mmm]" prefix so they can be
+ * correlated with packet captures and used to measure zap latency.
+ * syslog lines stay prefix-free.
  * ================================================================ */
-#define PXY_ERR(fmt, ...)  do { syslog(LOG_ERR,  "FCC_PROXY: " fmt, ##__VA_ARGS__); \
-                                if (g_config.debug) fprintf(stderr, "FCC_PROXY[ERR]: " fmt "\n", ##__VA_ARGS__); } while(0)
+static inline const char *fcc_log_ts(char *buf, size_t len)
+{
+    struct timespec ts;
+    struct tm tm;
+    time_t sec;
 
-#define PXY_INFO(fmt, ...) do { syslog(LOG_INFO, "FCC_PROXY: " fmt, ##__VA_ARGS__); \
-                                if (g_config.debug) fprintf(stderr, "FCC_PROXY[INFO]: " fmt "\n", ##__VA_ARGS__); } while(0)
+    clock_gettime(CLOCK_REALTIME, &ts);
+    sec = ts.tv_sec;
+    localtime_r(&sec, &tm);
+    snprintf(buf, len, "[%02d:%02d:%02d.%03ld] ",
+             tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec / 1000000L);
+    return buf;
+}
 
-#define PXY_DBG(fmt, ...)  do { if (g_config.debug) fprintf(stderr, "FCC_PROXY[DBG]: " fmt "\n", ##__VA_ARGS__); } while(0)
+#define PXY_ERR(fmt, ...)  do { char ts_[32]; \
+                                syslog(LOG_ERR,  "FCC_PROXY: " fmt, ##__VA_ARGS__); \
+                                if (g_config.debug) fprintf(stderr, "%sFCC_PROXY[ERR]: " fmt "\n", fcc_log_ts(ts_, sizeof(ts_)), ##__VA_ARGS__); } while(0)
+
+#define PXY_INFO(fmt, ...) do { char ts_[32]; \
+                                syslog(LOG_INFO,  "FCC_PROXY: " fmt, ##__VA_ARGS__); \
+                                if (g_config.debug) fprintf(stderr, "%sFCC_PROXY[INFO]: " fmt "\n", fcc_log_ts(ts_, sizeof(ts_)), ##__VA_ARGS__); } while(0)
+
+#define PXY_DBG(fmt, ...)  do { char ts_[32]; \
+                                if (g_config.debug) fprintf(stderr, "%sFCC_PROXY[DBG]: " fmt "\n", fcc_log_ts(ts_, sizeof(ts_)), ##__VA_ARGS__); } while(0)
 
 /* Global config instance */
 extern proxy_config_t g_config;

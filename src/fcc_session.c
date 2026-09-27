@@ -272,6 +272,28 @@ void session_free(proxy_session_t *s)
     if (!s)
         return;
 
+    if (s->state != SESS_FREE)
+    {
+        char cli[INET_ADDRSTRLEN] = "?";
+        char srv[INET_ADDRSTRLEN] = "-";
+        uint16_t cli_port = ntohs(s->client_addr.sin_port);
+        uint16_t srv_port = ntohs(s->server_addr.sin_port);
+
+        inet_ntop(AF_INET, &s->client_addr.sin_addr, cli, sizeof(cli));
+        if (s->server_addr.sin_addr.s_addr)
+            inet_ntop(AF_INET, &s->server_addr.sin_addr, srv, sizeof(srv));
+
+        /* Close-out summary. Reading guide:
+         *   resp_rx>0 && rtp_rx=0  -> signaling OK, media blocked in ingress
+         *   resp_rx=0              -> signaling never reached the client
+         */
+        PXY_INFO("Session %d closed: %lds, cli=%s:%u, srv=%s:%u, "
+                 "req_rx=%u resp_rx=%u rtp_rx=%u",
+                 s->slot, (long)(time(NULL) - s->created),
+                 cli, cli_port, srv, srv_port,
+                 s->req_rx, s->resp_rx, s->rtp_rx);
+    }
+
     if (s->server_sock >= 0)
     {
         epoll_ctl(g_config.epoll_fd, EPOLL_CTL_DEL, s->server_sock, NULL);
