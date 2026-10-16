@@ -24,6 +24,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
@@ -542,6 +543,36 @@ static int ensure_local_ip(const struct in_addr *server)
     return 0;
 }
 
+/* Is this one of our own interface addresses?  Distinguishes an intercepted
+ * request (the client addressed a real upstream server) from one where the
+ * client addressed the proxy itself — via a plain hit on a local address or
+ * a blanket DNAT/REDIRECT of the signaling port to loopback.  In the latter
+ * case the original destination is the proxy, so the upstream server cannot
+ * be recovered and -s is required. */
+static int is_local_address(const struct in_addr *addr)
+{
+    struct ifaddrs *head, *p;
+    int found = 0;
+
+    if (getifaddrs(&head) < 0)
+        return 0;
+
+    for (p = head; p; p = p->ifa_next)
+    {
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET)
+            continue;
+        const struct sockaddr_in *sin =
+            (const struct sockaddr_in *)p->ifa_addr;
+        if (sin->sin_addr.s_addr == addr->s_addr)
+        {
+            found = 1;
+            break;
+        }
+    }
+    freeifaddrs(head);
+    return found;
+}
+
 static int init_session_destination(proxy_session_t *sess,
                                     const struct sockaddr_in *src,
                                     const struct sockaddr_in *orig_dst)
@@ -559,6 +590,27 @@ static int init_session_destination(proxy_session_t *sess,
         }
         else if (orig_dst && orig_dst->sin_addr.s_addr)
         {
+            if (is_local_address(&orig_dst->sin_addr))
+            {
+                /* Client addressed the proxy itself; the real upstream
+                 * server is not in the packet and cannot be recovered.
+                 * Drop this client's request and tell the operator, but
+                 * keep serving other clients.  Log at most every 10s. */
+                static time_t last_log = 0;
+                time_t now = time(NULL);
+                if (now - last_log >= 10)
+                {
+                    char cli[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &src->sin_addr, cli, sizeof(cli));
+                    PXY_ERR("client %s addressed the proxy itself (%s:%u): "
+                            "upstream server cannot be discovered, pass -s",
+                            cli, inet_ntoa(orig_dst->sin_addr),
+                            ntohs(orig_dst->sin_port));
+                    last_log = now;
+                }
+                return -1;
+            }
+
             sess->server_addr = *orig_dst;
             sess->server_addr.sin_family = AF_INET;
             PXY_INFO("Session %d discovered server %s:%u",

@@ -130,6 +130,12 @@ listen port.
 - At startup the proxy probes `IP_RECVORIGDSTADDR`; if the kernel rejects it
   the proxy **exits with an error** (there is no other way to learn the
   server).
+- If a request's original destination is one of the proxy's own addresses
+  (the client addressed the proxy directly, or a blanket DNAT/REDIRECT sent
+  the signaling port to loopback), the upstream server is simply not in the
+  packet and cannot be recovered. Such requests are **dropped and logged**
+  (the offending client is not allowed to take down the rest); pass `-s` for
+  that deployment.
 - The discovered address is remembered per client IP. Redirect hops rewrite
   the response's server address to the proxy's own LAN address, so later
   requests for the same client reuse the server the redirect chain settled on
