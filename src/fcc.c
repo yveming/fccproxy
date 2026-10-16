@@ -188,7 +188,8 @@ static int handle_huawei_nat_from_client(const uint8_t *buf, ssize_t len,
 
 static int handle_rtcp_from_client(const uint8_t *buf, ssize_t len,
                                    const struct sockaddr_in *src,
-                                   const struct in_addr *dst_ip)
+                                   const struct in_addr *dst_ip,
+                                   const struct sockaddr_in *orig_dst)
 {
     int fmt = fcc_get_fmt(buf);
     proto_type_t proto = fcc_detect_proto(buf, len);
@@ -246,7 +247,8 @@ static int handle_rtcp_from_client(const uint8_t *buf, ssize_t len,
         }
         else
         {
-            sess = proxy_session_create(src, dst_ip, proto, src_str, src_port);
+            sess = proxy_session_create(src, dst_ip, proto, src_str, src_port,
+                                        orig_dst);
             if (!sess)
                 return -1;
         }
@@ -337,13 +339,14 @@ static int handle_media_from_client(const uint8_t *buf, ssize_t len,
 
 int handle_packet_from_client(const uint8_t *buf, ssize_t len, int fd,
                               const struct sockaddr_in *src,
-                              const struct in_addr *dst_ip)
+                              const struct in_addr *dst_ip,
+                              const struct sockaddr_in *orig_dst)
 {
     if (huawei_is_nat_pkt(buf, len))
         return handle_huawei_nat_from_client(buf, len, src);
 
     if (fd == g_config.listen_fd)
-        return handle_rtcp_from_client(buf, len, src, dst_ip);
+        return handle_rtcp_from_client(buf, len, src, dst_ip, orig_dst);
 
     return handle_media_from_client(buf, len, src);
 }

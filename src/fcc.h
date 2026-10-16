@@ -50,7 +50,8 @@ ssize_t fcc_bridge(uint8_t *out, size_t out_size,
 /* Packet handlers */
 int handle_packet_from_client(const uint8_t *buf, ssize_t len, int fd,
                               const struct sockaddr_in *src,
-                              const struct in_addr *dst_ip);
+                              const struct in_addr *dst_ip,
+                              const struct sockaddr_in *orig_dst);
 int handle_packet_from_server(const uint8_t *buf, ssize_t len, int fd);
 
 #endif /* __FCC_H__ */

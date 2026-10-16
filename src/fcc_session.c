@@ -491,11 +491,89 @@ static int create_session_sockets(proxy_session_t *sess)
     return 0;
 }
 
+/*
+ * Reuse the upstream server already discovered for this client IP.  After a
+ * redirect the proxy rewrites the response's server address to its own LAN
+ * address, so the client re-sends its request to the proxy itself and the
+ * request's original destination is no longer a usable upstream target.  The
+ * server the redirect chain settled on is therefore inherited from this
+ * client's earlier session.
+ */
+static int inherit_server_for_client(proxy_session_t *sess,
+                                     const struct sockaddr_in *src)
+{
+    for (int i = 0; i < MAX_SESSIONS; i++)
+    {
+        proxy_session_t *os = &g_config.sessions[i];
+        if (os != sess && os->state != SESS_FREE &&
+            os->server_addr.sin_addr.s_addr &&
+            os->client_addr.sin_addr.s_addr == src->sin_addr.s_addr)
+        {
+            sess->server_addr = os->server_addr;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Resolve the local (server-facing) IP lazily.  In auto-server mode it is
+ * unknown at startup; it is resolved once by routing to the server the first
+ * session discovered, then kept for all later sessions. */
+static int ensure_local_ip(const struct in_addr *server)
+{
+    if (g_config.local_ip[0])
+        return 0;
+
+    if (!server || !server->s_addr)
+        return -1;
+
+    char peer[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, server, peer, sizeof(peer));
+    if (get_local_ip_for_peer(peer, g_config.local_ip,
+                              sizeof(g_config.local_ip)) < 0)
+    {
+        PXY_ERR("cannot determine local IP by routing to %s", peer);
+        g_config.local_ip[0] = '\0';
+        return -1;
+    }
+    inet_pton(AF_INET, g_config.local_ip, &g_config.local_addr);
+    PXY_INFO("local IP resolved to %s (route to %s)",
+             g_config.local_ip, peer);
+    return 0;
+}
+
 static int init_session_destination(proxy_session_t *sess,
-                                    const struct sockaddr_in *src)
+                                    const struct sockaddr_in *src,
+                                    const struct sockaddr_in *orig_dst)
 {
     memset(&sess->server_addr, 0, sizeof(sess->server_addr));
     sess->server_addr.sin_family = AF_INET;
+
+    if (g_config.server_auto)
+    {
+        if (inherit_server_for_client(sess, src))
+        {
+            PXY_INFO("Session %d inherits server %s:%u for client",
+                     sess->slot, inet_ntoa(sess->server_addr.sin_addr),
+                     ntohs(sess->server_addr.sin_port));
+        }
+        else if (orig_dst && orig_dst->sin_addr.s_addr)
+        {
+            sess->server_addr = *orig_dst;
+            sess->server_addr.sin_family = AF_INET;
+            PXY_INFO("Session %d discovered server %s:%u",
+                     sess->slot, inet_ntoa(sess->server_addr.sin_addr),
+                     ntohs(sess->server_addr.sin_port));
+        }
+        else
+        {
+            PXY_ERR("no -s given and no original destination for client; "
+                    "cannot determine upstream server");
+            return -1;
+        }
+        return 0;
+    }
+
     sess->server_addr.sin_port = htons(g_config.server_port);
     if (inet_pton(AF_INET, g_config.server_ip,
                   &sess->server_addr.sin_addr) != 1)
@@ -527,7 +605,8 @@ proxy_session_t *proxy_session_create(const struct sockaddr_in *src,
                                       const struct in_addr *dst_ip,
                                       proto_type_t client_proto,
                                       const char *src_str,
-                                      uint16_t src_port)
+                                      uint16_t src_port,
+                                      const struct sockaddr_in *orig_dst)
 {
     proxy_session_t *sess = session_alloc();
     if (!sess)
@@ -547,8 +626,9 @@ proxy_session_t *proxy_session_create(const struct sockaddr_in *src,
     else
         inet_pton(AF_INET, g_config.local_ip, &sess->lan_ip);
 
-    if (create_session_sockets(sess) < 0 ||
-        init_session_destination(sess, src) < 0)
+    if (init_session_destination(sess, src, orig_dst) < 0 ||
+        ensure_local_ip(&sess->server_addr.sin_addr) < 0 ||
+        create_session_sockets(sess) < 0)
     {
         session_free(sess);
         return NULL;

@@ -88,14 +88,15 @@ void init_daemon(void)
  * ================================================================ */
 static void handle_packet(int fd, const uint8_t *buf, ssize_t len,
                             const struct sockaddr_in *peer,
-                            const struct in_addr *dst_ip)
+                            const struct in_addr *dst_ip,
+                            const struct sockaddr_in *orig_dst)
 {
-    struct in_addr local_ip_addr;
-    if (inet_pton(AF_INET, g_config.local_ip, &local_ip_addr) != 1)
-        return;
-
-    if (dst_ip->s_addr != local_ip_addr.s_addr)
-        handle_packet_from_client(buf, len, fd, peer, dst_ip);
+    /* Before the local (server-facing) IP is known — auto-server mode,
+     * first packet — the only active socket is the listen socket, so
+     * everything that arrives is from a client. */
+    if (!g_config.local_ip[0] ||
+        dst_ip->s_addr != g_config.local_addr.s_addr)
+        handle_packet_from_client(buf, len, fd, peer, dst_ip, orig_dst);
     else
         handle_packet_from_server(buf, len, fd);
 }
@@ -129,6 +130,9 @@ static void receive_packet(int fd)
         }
 
         struct in_addr dst_ip = {INADDR_ANY};
+        struct sockaddr_in orig_dst;
+        int have_orig = 0;
+        memset(&orig_dst, 0, sizeof(orig_dst));
         for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
              cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg))
         {
@@ -138,9 +142,17 @@ static void receive_packet(int fd)
                 struct in_pktinfo *pkt = (struct in_pktinfo *)CMSG_DATA(cmsg);
                 dst_ip = pkt->ipi_addr;
             }
+            else if (g_config.origdst_ok &&
+                     cmsg->cmsg_level == IPPROTO_IP &&
+                     cmsg->cmsg_type == IP_RECVORIGDSTADDR)
+            {
+                memcpy(&orig_dst, CMSG_DATA(cmsg), sizeof(orig_dst));
+                have_orig = 1;
+            }
         }
 
-        handle_packet(fd, buf, n, &peer, &dst_ip);
+        handle_packet(fd, buf, n, &peer, &dst_ip,
+                      have_orig ? &orig_dst : NULL);
 
         if (++received >= UDP_RECV_BURST_LIMIT)
             break;
@@ -209,7 +221,8 @@ static void usage(const char *prog)
             "\n"
             "Options:\n"
             "  -p <port>   Listen port for client connections (default: 8027)\n"
-            "  -s <IP:PORT> FCC server address (required, e.g. 10.0.0.1:8027)\n"
+            "  -s <IP:PORT> FCC server address (optional; if omitted, it is\n"
+            "                discovered from the client's original destination)\n"
             "  -i <iface>  Network interface for local IP (optional;\n"
             "                auto-detect via routing table if omitted)\n"
             "  -t          Force server-side protocol to Telecom\n"
@@ -294,12 +307,13 @@ static int parse_args(int argc, char *argv[])
         }
     }
 
-    if (!server_set || g_config.server_port == 0)
+    if (server_set && g_config.server_port == 0)
     {
-        fprintf(stderr, "Error: server address (-s IP:PORT) is required\n");
-        usage(argv[0]);
+        fprintf(stderr, "Error: -s requires a non-zero port (IP:PORT)\n");
         return -1;
     }
+    if (!server_set)
+        g_config.server_auto = 1;   /* discover upstream from clients */
     return 0;
 }
 
@@ -316,17 +330,31 @@ static int init_local_ip(void)
         }
         PXY_INFO("Interface %s IP: %s", g_config.ifname, g_config.local_ip);
     }
-    else if (get_local_ip_for_peer(g_config.server_ip,
+    else if (!g_config.server_auto)
+    {
+        if (get_local_ip_for_peer(g_config.server_ip,
                               g_config.local_ip,
                               sizeof(g_config.local_ip)) < 0)
-    {
-        fprintf(stderr, "Error: cannot determine local IP (-i not given "
-                        "and auto-detect to %s failed)\n",
-                g_config.server_ip);
-        return -1;
+        {
+            fprintf(stderr, "Error: cannot determine local IP (-i not given "
+                            "and auto-detect to %s failed)\n",
+                    g_config.server_ip);
+            return -1;
+        }
+        PXY_INFO("Auto-detected local IP: %s", g_config.local_ip);
     }
     else
-        PXY_INFO("Auto-detected local IP: %s", g_config.local_ip);
+    {
+        /* No -i and no -s: the upstream server is only known once the
+         * first session recovers it, so resolve the local (server-facing)
+         * IP lazily by routing to that server. */
+        g_config.local_ip[0] = '\0';
+        g_config.local_addr.s_addr = 0;
+        PXY_INFO("local IP deferred: will be resolved by the route to the "
+                 "discovered server");
+        return 0;
+    }
+
     inet_pton(AF_INET, g_config.local_ip, &g_config.local_addr);
     return 0;
 }
@@ -361,6 +389,26 @@ static int init_listen_socket(void)
                    &pktinfo, sizeof(pktinfo)) < 0)
         PXY_ERR("IP_PKTINFO not supported, using -i address for responses");
 
+    if (g_config.server_auto)
+    {
+        int on = 1;
+        if (setsockopt(g_config.listen_fd, IPPROTO_IP, IP_RECVORIGDSTADDR,
+                       &on, sizeof(on)) < 0)
+        {
+            PXY_ERR("no -s given and kernel rejected IP_RECVORIGDSTADDR: %s",
+                    strerror(errno));
+            close(g_config.listen_fd);
+            return -1;
+        }
+        g_config.origdst_ok = 1;
+
+        if (access("/proc/net/nf_conntrack", F_OK) != 0 &&
+            access("/proc/net/ip_conntrack", F_OK) != 0)
+            PXY_ERR("no -s given but no conntrack table; "
+                    "original-destination recovery may fail "
+                    "(is nf_conntrack loaded?)");
+    }
+
     PXY_INFO("Listening on UDP port %u", g_config.listen_port);
     return 0;
 }
@@ -392,9 +440,18 @@ static void print_startup_banner(void)
     else if (g_config.server_proto == PROTO_HUAWEI)
         server_proto = "Huawei";
 
-    PXY_INFO("FCC Proxy started: client=auto-detect, server_proto=%s, server=%s:%u, local=%s, listen=%u",
-             server_proto, g_config.server_ip, g_config.server_port,
-             g_config.local_ip, g_config.listen_port);
+    char server_str[64];
+    if (g_config.server_auto)
+        snprintf(server_str, sizeof(server_str), "auto (discover)");
+    else
+        snprintf(server_str, sizeof(server_str), "%s:%u",
+                 g_config.server_ip, g_config.server_port);
+
+    const char *local_str = g_config.local_ip[0] ? g_config.local_ip
+                                                 : "(deferred)";
+
+    PXY_INFO("FCC Proxy started: client=auto-detect, server_proto=%s, server=%s, local=%s, listen=%u",
+             server_proto, server_str, local_str, g_config.listen_port);
 
     if (g_config.debug)
     {
@@ -402,8 +459,8 @@ static void print_startup_banner(void)
         fprintf(stderr, "  Client:    auto-detect (Huawei or Telecom)\n");
         fprintf(stderr, "  Server protocol: %s\n", server_proto);
         fprintf(stderr, "  Listen:    0.0.0.0:%u\n", g_config.listen_port);
-        fprintf(stderr, "  Server:    %s:%u\n", g_config.server_ip, g_config.server_port);
-        fprintf(stderr, "  Local IP:  %s\n", g_config.local_ip);
+        fprintf(stderr, "  Server:    %s\n", server_str);
+        fprintf(stderr, "  Local IP:  %s\n", local_str);
         fprintf(stderr, "==============================\n\n");
     }
 }

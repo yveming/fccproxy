@@ -109,7 +109,8 @@ proxy_session_t *proxy_session_create(const struct sockaddr_in *src,
                                       const struct in_addr *dst_ip,
                                       proto_type_t client_proto,
                                       const char *src_str,
-                                      uint16_t src_port);
+                                      uint16_t src_port,
+                                      const struct sockaddr_in *orig_dst);
 proxy_session_t *session_alloc(void);
 void             session_free(proxy_session_t *s);
 void             session_mark_terminating(proxy_session_t *s, time_t now);

@@ -7,6 +7,7 @@
 - **Bidirectional protocol conversion** between Huawei and Telecom FCC signaling (request, response, sync, termination)
 - **Same-protocol NAT passthrough** with address/port rewriting
 - **Auto-detection** of client protocol from RTCP feedback header FMT values
+- **Server auto-discovery** — recover the upstream FCC server from the client's pre-DNAT destination (`IP_RECVORIGDSTADDR`); `-s` is optional
 - **Dynamic local IP detection** — by named interface or via routing table lookup
 - **Interface IP monitoring** — adapts when the network interface IP changes
 - **Session management** — up to 64 concurrent sessions with configurable timeouts
@@ -93,7 +94,8 @@ fccproxy [options]
 
 Options:
   -p <port>    Listen port for client connections (default: 8027)
-  -s <IP:PORT> FCC server address (required, e.g. 10.0.0.1:8027)
+  -s <IP:PORT> FCC server address (optional; if omitted, discovered from the
+                 client's original destination — see "Server discovery")
   -i <iface>   Network interface for local IP (optional;
                  auto-detects via routing table if omitted)
   -t           Force server-side protocol to Telecom
@@ -111,13 +113,36 @@ fccproxy -p 8027 -s 10.0.0.1:8027 -i eth0 -vv
 
 # Auto-detect local IP via routing
 fccproxy -p 8027 -s 172.16.0.1:8027 -v
+
+# No -s: discover the FCC server from the client's original destination
+fccproxy -p 8027 -v
 ```
+
+### Server discovery (`-s` omitted)
+
+With no `-s`, the upstream FCC server is recovered per client from the
+**pre-DNAT destination** of its first request, using the
+`IP_RECVORIGDSTADDR` socket option (the `IP_ORIGDSTADDR` control message).
+This requires the client's signaling to reach the proxy through netfilter
+NAT — `iptables -j DNAT`/`REDIRECT` (conntrack) sending it to the proxy's
+listen port.
+
+- At startup the proxy probes `IP_RECVORIGDSTADDR`; if the kernel rejects it
+  the proxy **exits with an error** (there is no other way to learn the
+  server).
+- The discovered address is remembered per client IP. Redirect hops rewrite
+  the response's server address to the proxy's own LAN address, so later
+  requests for the same client reuse the server the redirect chain settled on
+  instead of trusting their (now meaningless) original destination.
+- The local (server-facing) IP is unknown at startup in this mode; it is
+  resolved once, by routing to the first discovered server, and kept
+  afterwards. Pass `-i` to pin it explicitly.
 
 ## How It Works
 
-1. **Startup**: The proxy creates a UDP listening socket, determines its local IP, and enters the epoll event loop.
+1. **Startup**: The proxy creates a UDP listening socket, determines its local IP (or defers it, when the server is auto-discovered), and enters the epoll event loop.
 2. **Client detection**: When a packet arrives, the FMT field in the RTCP feedback header identifies the protocol (Huawei or Telecom) and message type (request, response, sync, termination).
-3. **Session creation**: On the first valid request from a client, a session is created with dedicated server-side sockets.
+3. **Session creation**: On the first valid request from a client, a session is created with dedicated server-side sockets; the upstream server is taken from `-s` or, if omitted, recovered from the request's original (pre-DNAT) destination.
 4. **Protocol conversion**: `fcc_bridge()` translates packet fields (headers, addresses, ports, result codes, speed values) between the two formats.
 5. **NAT rewriting**: Source/destination IPs and ports in the payload are rewritten so each side sees the proxy as the peer.
 6. **Media forwarding**: RTP packets are forwarded without inspection between the paired signal/media sockets.

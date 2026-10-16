@@ -26,12 +26,20 @@
 
 #include "fcc_session.h"
 
+/* cmsg type carrying the pre-DNAT destination on a UDP socket that went
+ * through netfilter NAT (REDIRECT / DNAT-to-local).  <linux/in.h> defines
+ * this too, but including it alongside <netinet/in.h> is asking for
+ * trouble, so define it by ABI value (== IP_ORIGDSTADDR). */
+#ifndef IP_RECVORIGDSTADDR
+#define IP_RECVORIGDSTADDR 20
+#endif
+
 /* ================================================================
  * Runtime defaults and loop limits
  * ================================================================ */
 #define DEFAULT_LISTEN_PORT       8027
 #define UDP_PACKET_BUF_SIZE       2048
-#define PKTINFO_CMSG_BUF_SIZE     64
+#define PKTINFO_CMSG_BUF_SIZE     128
 #define EPOLL_MAX_EVENTS          128
 #define EPOLL_TIMEOUT_MS          2000
 #define UDP_RECV_BURST_LIMIT      32
@@ -48,6 +56,8 @@ typedef struct {
     uint16_t        listen_port;   /* Host byte order */
     char            server_ip[INET_ADDRSTRLEN];
     uint16_t        server_port;   /* Host byte order */
+    int             server_auto;   /* -s omitted: discover upstream per session */
+    int             origdst_ok;    /* kernel accepted IP_RECVORIGDSTADDR */
     proto_type_t    server_proto;  /* PROTO_UNKNOWN = follow client */
     struct in_addr  local_addr; /* in_addr of the local ip */
     char            local_ip[INET_ADDRSTRLEN];
